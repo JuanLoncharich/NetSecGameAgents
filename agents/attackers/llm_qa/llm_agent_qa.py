@@ -85,6 +85,18 @@ if __name__ == "__main__":
     )
 
     parser.add_argument(
+        "--use_reflection",
+        action="store_true",
+        help="To use reflection prompting technique in the LLM calls."
+    )
+
+    parser.add_argument(
+        "--use_self_consistency",
+        action="store_true",
+        help="To use self-consistency prompting technique in the LLM calls."
+    )
+
+    parser.add_argument(
         "--mlflow_tracking_uri",
         type=str,
         default="http://147.32.83.60",
@@ -163,6 +175,7 @@ if __name__ == "__main__":
     # Create an empty DataFrame for storing prompts and responses, and evaluations
     #prompt_table = pd.DataFrame(columns=["state", "prompt", "response", "evaluation"])
     prompt_table = []
+    validator_table_complete = []
     
     # We are still not using this, but we keep track
     is_detected = False
@@ -173,6 +186,10 @@ if __name__ == "__main__":
     print("Done")
     for episode in range(1, args.test_episodes + 1):
         actions_took_in_episode = []
+        valid_actions = 0
+        boring_actions = 0
+        blah_actions = 0
+
         evaluations = [] # used for prompt table storage.
         logger.info(f"Running episode {episode}")
         print(f"Running episode {episode}")
@@ -195,7 +212,9 @@ if __name__ == "__main__":
             goal=observation.info["goal_description"],
             memory_len=args.memory_buffer,
             api_url=args.api_url,
-            use_reasoning=args.use_reasoning
+            use_reasoning=args.use_reasoning,
+            use_reflection=args.use_reflection,
+            use_self_consistency=args.use_self_consistency
         )
         print(observation)
         for i in range(num_iterations):
@@ -215,11 +234,13 @@ if __name__ == "__main__":
                 else:
                     evaluations.append(3)
             else:
+
                 print("Invalid action: ")
                 evaluations.append(0)
 
             try:
                 if not is_valid:
+                    blah_actions += 1
                     memories.append(
                         (
                             (response_dict["action"],
@@ -234,6 +255,7 @@ if __name__ == "__main__":
                     # But we could a manual evaluation based on the prior knowledge and weight the different components.
                     # For example: finding new data is better than discovering hosts (?)
                     if good_action:
+                        valid_actions += 1
                         memories.append(
                             (
                                 (response_dict["action"],
@@ -243,6 +265,7 @@ if __name__ == "__main__":
                         )
                         print("Helpful")
                     else:
+                        boring_actions += 1
                         memories.append(
                             (
                                 (response_dict["action"],
@@ -265,7 +288,9 @@ if __name__ == "__main__":
                                 "badly formated."
                 )
                 print("badly formated")
-            
+            if len(memories) > args.memory_buffer:
+                # If the memory is full, remove the oldest memory
+                memories.pop(0)
             # logger.info(f"Iteration: {i} JSON: {is_json_ok} Valid: {is_valid} Good: {good_action}")
             logger.info(f"Iteration: {i} Valid: {is_valid} Good: {good_action}")
             
@@ -340,12 +365,23 @@ if __name__ == "__main__":
             "end_reason": str(reason["end_reason"])
         }
         prompt_table.append(episode_prompt_table)
-        
+
+        validator_table = {
+            "amount_valid": valid_actions,
+            "amount_boring": boring_actions,
+            "amount_blah_actions": blah_actions
+        }
+        validator_table_complete.append(validator_table)
+
         #episode_prompt_table = pd.DataFrame(episode_prompt_table)
         #prompt_table = pd.concat([prompt_table,episode_prompt_table],axis=0,ignore_index=True)
         
     #prompt_table.to_csv("states_prompts_responses_new.csv", index=False)
-    
+
+    # Save the prompt table as a JSON file
+    with open("validator_data.json", "w") as json_file:
+        json.dump(validator_table_complete, json_file, indent=4)
+
     # Save the JSON file
     with open("episode_data.json", "w") as json_file:
         json.dump(prompt_table, json_file, indent=4)
