@@ -212,10 +212,7 @@ class LLMActionPlanner:
         self.logger.info(f"Text sent to the LLM: {messages}")
 
         if self.use_self_consistency:
-            if repetitions > 1:
-                response = self.get_self_consistent_response(messages, temp=repetitions/9, max_tokens=1024)
-            else:
-                response = self.openai_query(messages, max_tokens=1024)
+            response = self.get_self_consistent_response(messages, temp=repetitions/9, max_tokens=1024)
         else:
             response = self.openai_query(messages, max_tokens=1024)
 
