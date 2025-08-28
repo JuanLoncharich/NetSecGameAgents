@@ -14,125 +14,15 @@ from llm_action_planner import LLMActionPlanner
 from os import path
 from transformers import AutoModelForCausalLM, AutoTokenizer, GenerationConfig
 
-import textgrad as tg
-import tempfile
-import os
-
-import csv
-
-import markdown
-from openai import OpenAI
-from dotenv import dotenv_values
-import yaml
-
 sys.path.append(
     path.dirname(path.dirname(path.dirname(path.dirname(path.abspath(__file__)))))
 )
 
-from AIDojoCoordinator.game_components import AgentStatus, ActionType
+from AIDojoCoordinator.game_components import AgentStatus
 from NetSecGameAgents.agents.base_agent import BaseAgent
 
 #mlflow.set_tracking_uri("http://147.32.83.60")
 #mlflow.set_experiment("LLM_QA_netsecgame_dec2024")
-
-
-def log_reward_to_csv(episode: int, reward: float, filename: str = "reward_history.csv"):
-    """Appends the episode number and average batch reward to a CSV file."""
-    # Check if the file exists to write the header only once
-    file_exists = os.path.isfile(filename)
-
-    with open(filename, mode='a', newline='') as f:
-        writer = csv.writer(f)
-        if not file_exists:
-            writer.writerow(["episode_end_of_batch", "avg_batch_reward"])  # Write header
-        writer.writerow([episode, reward])
-
-def validate_prompt(prompt: str) -> bool:
-    """Validate the YAML structure and required keys"""
-    try:
-        parsed = yaml.safe_load(prompt)
-        # Check for required top-level keys
-        if not all(key in parsed for key in ['prompts', 'questions']):
-            return False
-        # Check all required actions are present
-        required_actions = {'ScanNetwork', 'ScanServices', 'FindData',
-                           'ExploitService', 'ExfiltrateData'}
-        instructions = parsed['prompts'].get('INSTRUCTIONS_TEMPLATE', '')
-        examples = str(parsed['prompts'].get('examples', ''))
-        return all(action in instructions+examples for action in required_actions)
-    except Exception as e:
-        logging.error(f"Prompt validation failed: {str(e)}")
-        return False
-
-def generate_change_report(old_prompt: str, new_prompt: str, batch_episodes: list) -> str:
-    """Generate human-readable change report using GPT-4o"""
-    try:
-        # Prepare batch summary
-        win_count = sum(1 for e in batch_episodes if e["win"])
-        loss_count = len(batch_episodes) - win_count
-        episodes_range = f"{batch_episodes[0]['episode']}-{batch_episodes[-1]['episode']}"
-
-        # Create prompt for GPT-4o
-        report_prompt = f"""
-        You are a cybersecurity prompt optimization specialist. Document these changes:
-
-        CONTEXT:
-        - Episodes: {episodes_range}
-        - Results: {win_count} wins, {loss_count} losses
-        - Optimization goal: Increase win rate in network security simulation
-
-        OLD PROMPT: 
-        {old_prompt}
-
-        NEW PROMPT:
-        {new_prompt}
-
-        Write a structured report with:
-        1. Key changes made
-        2. Reasoning behind changes
-        3. Expected impact on agent performance
-        4. Constraints maintained
-        """
-
-        # Get API key from environment
-        env_config = dotenv_values(".env")
-        api_key = env_config.get("OPENAI_API_KEY")
-        if not api_key:
-            raise ValueError("OPENAI_API_KEY not found in .env file")
-
-        # Query GPT-4o
-        client = OpenAI(api_key=api_key)
-        response = client.chat.completions.create(
-            model="gpt-4o",
-            messages=[{"role": "user", "content": report_prompt}],
-            max_tokens=1000
-        )
-        return response.choices[0].message.content.strip()
-
-    except Exception as e:
-        logging.error(f"Error generating change report: {e}")
-        return f"Error generating change report: {str(e)}"
-
-
-def save_report_markdown(report_entry: dict, episode: int):
-    """Save optimization report as markdown file"""
-    try:
-        episode_range = "-".join(str(e) for e in report_entry["episodes"])
-        filename = f"optimization_report_ep{episode_range}.md"
-
-        with open(filename, "w") as f:
-            f.write(f"# Optimization Report (Episodes {episode_range})\n\n")
-            f.write(f"**Win Rate**: {report_entry['win_rate'] * 100:.1f}%\n\n")
-            f.write("## Change Report\n\n")
-            f.write(report_entry["report"] + "\n\n")
-            f.write("## Old Prompt\n```yaml\n")
-            f.write(report_entry["old_prompt"] + "\n```\n\n")
-            f.write("## New Prompt\n```yaml\n")
-            f.write(report_entry["new_prompt"] + "\n```\n")
-
-        print(f"Saved optimization report to {filename}")
-    except Exception as e:
-        logging.error(f"Error saving markdown report: {e}")
 
 
 if __name__ == "__main__":
@@ -236,40 +126,6 @@ if __name__ == "__main__":
     
     args = parser.parse_args()
 
-    # ===== TEXTGRAD INITIALIZATION =====
-    # Load initial YAML prompt
-    with open('prompts.yaml', 'r') as f:
-        initial_yaml_prompt = f.read()
-
-    tg.set_backward_engine("gpt-4o", override=True)
-
-    optimizable_prompt = tg.Variable(
-        value=initial_yaml_prompt,
-        requires_grad=True,
-        role_description="YAML-structured cybersecurity prompt"
-    )
-
-
-    optimizer = tg.TextualGradientDescent(
-        parameters=[optimizable_prompt],
-        constraints=[
-            "Maintain valid YAML structure with top-level 'prompts' and 'questions' keys",
-            "Preserve keys: INSTRUCTIONS_TEMPLATE, COT_PROMPT, COT_PROMPT2, and question IDs Q1–Q4",
-            "Ensure that all five actions (ScanNetwork, ScanServices, FindData, ExploitService, ExfiltrateData) remain explicitly present in instructions and examples",
-            "Avoid introducing unrelated concepts like OWASP or generic CVEs",
-            "Preserve logical rules in the INSTRUCTIONS_TEMPLATE regarding action prerequisites and constraints (e.g., scan only known networks, exploit only known services)",
-            "Do not allow repetitions of actions — reinforce diversity and novelty in selected steps",
-            "Ensure all example actions are in valid JSON format and consistent with the actual schema",
-            "Maintain chronological logic: reconnaissance (ScanNetwork/ScanServices) → exploitation → data collection → exfiltration",
-            "Ensure that prompts include at least two examples of complete action sequences",
-            "The goal (`{{goal}}`) must remain in the instructions as a template variable"
-        ]
-    )
-
-    BATCH_SIZE = 5
-    optimization_reports = []  # Store all change reports
-    batch_episodes = []  # Track episodes in current batch
-
     logging.basicConfig(
         filename="llm_react.log",
         filemode="w",
@@ -338,8 +194,6 @@ if __name__ == "__main__":
         num_iterations = observation.info["max_steps"]
         current_state = observation.state
 
-        reward_textgrad = 0
-
         
         taken_action = None
         memories = []
@@ -347,24 +201,17 @@ if __name__ == "__main__":
         num_actions = 0
         repeated_actions = 0
 
-
-
         if args.llm is not None:
-
-            with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.yaml') as temp_file:
-                temp_file.write(optimizable_prompt.value)
-                temp_config_path = temp_file.name
-
             llm_query = LLMActionPlanner(
-                model_name=args.llm,
-                goal=observation.info["goal_description"],
-                memory_len=args.memory_buffer,
-                api_url=args.api_url,
-                config_file=temp_config_path,
-                use_reasoning=args.use_reasoning,
-                use_reflection=args.use_reflection,
-                use_self_consistency=args.use_self_consistency
-            )
+            episodes_json_file="past_episodes",
+            model_name=args.llm,
+            goal=observation.info["goal_description"],
+            memory_len=args.memory_buffer,
+            api_url=args.api_url,
+            use_reasoning=args.use_reasoning,
+            use_reflection=args.use_reflection,
+            use_self_consistency=args.use_self_consistency
+        )
         print(observation)
         for i in range(num_iterations):
             good_action = False
@@ -397,8 +244,6 @@ if __name__ == "__main__":
                     )
                     print("not valid based on your status.")
 
-                    reward_textgrad += -50
-
                 else:
                     # This is based on the assumption that more valid actions in the state are better/more helpful.
                     # But we could a manual evaluation based on the prior knowledge and weight the different components.
@@ -412,19 +257,6 @@ if __name__ == "__main__":
                             )
                         )
                         print("Helpful")
-
-                        action_type = action.type
-
-                        if action_type == ActionType.ScanNetwork:
-                            reward_textgrad += 10
-                        elif action_type == ActionType.FindServices:
-                            reward_textgrad += 20
-                        elif action_type == ActionType.ExploitService:
-                            reward_textgrad += 50
-                        elif action_type == ActionType.FindData:
-                            reward_textgrad += 75
-                        elif action_type == ActionType.ExfiltrateData:
-                            reward_textgrad += 75
                     else:
                         memories.append(
                             (
@@ -434,8 +266,6 @@ if __name__ == "__main__":
                             )
                         )
                         print("Not Helpful")
-                        reward_textgrad += -10
-
                     # If the action was repeated count it
                     if action in actions_took_in_episode:
                         repeated_actions += 1
@@ -477,7 +307,6 @@ if __name__ == "__main__":
                     num_win_steps += [steps]
                     type_of_end = "win"
                     evaluations[-1] = 10
-                    reward_textgrad += 150
                 elif AgentStatus.Fail == reason["end_reason"]:
                     detected += 1
                     num_detected_steps += [steps]
@@ -489,7 +318,6 @@ if __name__ == "__main__":
                     total_reward = -100
                     #steps = observation.info["max_steps"] #this fails
                     steps = num_iterations
-                    reward_textgrad += -50
                 else:
                     reach_max_steps += 1
                     type_of_end = "max_steps"
@@ -531,66 +359,11 @@ if __name__ == "__main__":
         prompt_table.append(episode_prompt_table)
         #episode_prompt_table = pd.DataFrame(episode_prompt_table)
         #prompt_table = pd.concat([prompt_table,episode_prompt_table],axis=0,ignore_index=True)
-
-        # ===== TEXTGRAD OPTIMIZATION =====
-        # Track batch results
-        win_this_episode = AgentStatus.Success == reason["end_reason"]
-        batch_episodes.append({
-            "episode": episode,
-            "win": win_this_episode,
-            "total_reward": reward_textgrad
-        })
-
-        # Batch optimization every BATCH_SIZE episodes
-        if episode % BATCH_SIZE == 0 or episode == args.test_episodes:
-            # At the end of a batch
-            batch_wins = sum(1 for e in batch_episodes if e["win"])
-            win_rate = batch_wins / len(batch_episodes)
-            # Calculate the average heuristic score for the batch
-            avg_batch_reward = sum(e["total_reward"] for e in batch_episodes) / len(batch_episodes)
-
-            log_reward_to_csv(episode, avg_batch_reward)
-
-            # Create a much more informative instruction for the TextLoss
-            evaluation_instruction = (
-                f"You are a cybersecurity prompt engineering expert. Evaluate and provide specific feedback "
-                f"to improve the following YAML prompt for an AI agent in a network attack simulation.\n\n"
-                f"**Batch Performance Metrics:**\n"
-                f"- **Win Rate:** {win_rate * 100:.1f}% ({batch_wins} wins in {len(batch_episodes)} episodes).\n"
-                f"- **Average Heuristic Score:** {avg_batch_reward:.2f}\n"
-                f"**Scoring System Used:**\n"
-                f"- ScanNetwork: +10, FindServices: +20, ExploitService: +50, FindData: +75, ExfiltrateData: +75\n"
-                f"- Not helpful action: -10, Invalid/badly formatted action: -50\n"
-                f"- Episode Win: +150, Episode Timeout: -50\n\n"
-                f"**Goal:** Modify the prompt to increase both the win rate and the average heuristic score. "
-                f"Focus on improving the agent's strategic action selection and adherence to logical attack sequences. "
-                f"Provide your critique below."
-            )
-
-            loss_fn = tg.TextLoss(evaluation_instruction)
-            loss = loss_fn(optimizable_prompt)
-            loss.backward()
-            optimizer.step()
-
-            optimization_reports.append(optimizable_prompt)
-
-            batch_episodes.clear()
-
-        # Clean up temp file
-        os.unlink(temp_config_path)
-
+        
     #prompt_table.to_csv("states_prompts_responses_new.csv", index=False)
     # Save the JSON file
     with open("episode_data.json", "w") as json_file:
         json.dump(prompt_table, json_file, indent=4)
-
-    # After all episodes
-    with open("full_optimization_history.json", "w") as f:
-        json.dump(optimization_reports, f, indent=2)
-
-    # Save final prompt
-    with open("final_optimized_prompt.yaml", 'w') as f:
-        f.write(optimizable_prompt.value)
 
     # After all episodes are done. Compute statistics
     test_win_rate = (wins / (args.test_episodes)) * 100
@@ -640,4 +413,3 @@ if __name__ == "__main__":
 
     print(text)
     logger.info(text)
-
